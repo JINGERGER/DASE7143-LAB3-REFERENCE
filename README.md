@@ -1,12 +1,77 @@
-# DASE7143 Lab 3 Reference: Target Search and Approach
+# DASE7143 Lab 3 Manual: Target Search and Approach
 
-A practical improvement guide for the ROS 2 robot search-and-approach exercise.
+This manual provides a practical workflow for building, testing, and evaluating a ROS 2 robot that:
 
-The robot must find a specified object, align with it, approach it, and stop at an appropriate distance **greater than 0.40 m**. Initial searching may use rotation in place.
+1. searches for a requested object;
+2. aligns the object with the camera centre;
+3. approaches it safely; and
+4. stops with a front clearance **greater than 0.40 m**.
 
-**Status:** This repository currently documents a proposed implementation and evaluation method. It does not yet provide an executable ROS 2 package or hardware-validated performance results. The repository name uses “Lab 3”; the supplied exercise refers to Coursework 2 Lab 1 as prerequisite material and labels its example video “Lab 2.” Confirm the official session name when preparing your report.
+Rotation in place may be used during the initial search.
 
-## What this guide improves
+> [!IMPORTANT]
+> This repository is an engineering guide, not an executable ROS 2 package or an official replacement for the course handout. Confirm the official lab name, required topics, robot platform, and submission format with the teaching team.
+
+## Learning outcomes
+
+After completing the lab, you should be able to:
+
+- connect RGB, depth, inference-result, and velocity-command interfaces in ROS 2;
+- associate a detected target with a valid depth measurement;
+- reject malformed, stale, or out-of-order perception results;
+- implement search, alignment, approach, and stopping as a state machine;
+- tune motion safely using measurements from the actual robot; and
+- evaluate performance with repeatable trials and quantitative evidence.
+
+## Before you start
+
+### Required resources
+
+- A ROS 2 workspace and the robot packages used in the prerequisite lab.
+- Access to the robot, RGB/depth camera, and target objects.
+- A configured object-recognition or vision-language-model interface.
+- A cleared test area, tape measure, and accessible emergency stop.
+- Permission to record video or ROS bag data, if required for the report.
+
+### Prerequisite knowledge
+
+You should already know how to build a ROS 2 workspace, run nodes, inspect topics, and publish a safe zero-velocity command. Revisit the prerequisite lab before moving the robot if any of these tasks are unfamiliar.
+
+### Safety rules
+
+- Perform the first tests with the drive wheels raised or motion disabled.
+- Keep linear and angular speeds low until their signs and units are verified.
+- Keep a person beside the emergency stop during every hardware trial.
+- Use a cleared, supervised test area; this exercise is not a complete collision-avoidance system.
+- Stop immediately when target, depth, or obstacle information becomes invalid.
+
+## Lab workflow
+
+Complete the milestones in order. Do not start autonomous approach testing until the preceding checkpoint passes.
+
+| Milestone | Task | Checkpoint |
+| --- | --- | --- |
+| 1 | Inspect ROS interfaces | Correct topics, message types, QoS, frames, and units are recorded |
+| 2 | Validate perception | The requested target is detected and malformed outputs are rejected |
+| 3 | Validate target depth | Stationary distance estimates agree with manual measurements |
+| 4 | Implement search and alignment | The robot finds and centres targets at low speed |
+| 5 | Implement approach and stop | The robot stops inside the declared safe interval |
+| 6 | Test failure handling | Stale data, target loss, and invalid depth always produce a stop |
+| 7 | Evaluate | Repeated trials, logs, measurements, and failure notes are saved |
+
+## Quick completion checklist
+
+- [ ] Define the target and a stopping interval entirely above 0.40 m.
+- [ ] Record topic names, message types, QoS, frames, and depth units.
+- [ ] Validate structured perception output and source timestamps.
+- [ ] Measure depth only inside the target region.
+- [ ] Implement `SEARCH`, `ALIGN`, `APPROACH`, `VERIFY_STOP`, `DONE`, and `HOLD`.
+- [ ] Add freshness limits, motion timeouts, speed limits, and a command watchdog.
+- [ ] Test each state independently before running the complete sequence.
+- [ ] Run repeated trials and measure final clearance from the robot front.
+- [ ] Save configuration, code revision, logs, videos, and report evidence.
+
+## Why the supplied scaffold needs improvement
 
 The supplied reference is intentionally incomplete: missing subscriptions, parameters, and control logic are student exercises. The more important engineering issues are the assumptions connecting perception to motion.
 
@@ -49,6 +114,10 @@ ros2 topic info --verbose <rgb_topic>
 ros2 topic info --verbose <depth_topic>
 ros2 topic info --verbose <vlm_result_topic>
 ros2 topic info --verbose <velocity_command_topic>
+ros2 topic hz <rgb_topic>
+ros2 topic hz <depth_topic>
+ros2 topic echo <depth_topic> --once
+ros2 interface show <message_type>
 ```
 
 Replace the placeholders with actual topic names. Confirm:
@@ -65,6 +134,17 @@ Replace the placeholders with actual topic names. Confirm:
 Do not assume the reference `/cmd_vel` topic and `Twist` message match every robot configuration. Ensure only the intended controller owns motion commands, or use the platform's command arbitration mechanism.
 
 For camera subscriptions, select QoS compatible with the actual publisher. A Reliable subscriber cannot receive from a Best Effort publisher. See the [ROS 2 QoS documentation](https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Quality-of-Service-Settings.html); use the documentation matching your installed distribution.
+
+Record the interface contract before writing control logic:
+
+| Interface | Topic | Message type | QoS | Frame/units | Expected rate |
+| --- | --- | --- | --- | --- | --- |
+| RGB image | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` |
+| Depth image | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` |
+| Inference result | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` |
+| Velocity command | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` |
+
+**Checkpoint:** while the robot is stationary, each required subscription receives data at the expected rate and publishing an explicit zero command keeps the robot stopped.
 
 ## 3. Make perception outputs unambiguous
 
@@ -109,6 +189,8 @@ The adapter must copy request IDs and timestamps from the input pipeline. Do not
 
 Repeated confirmation can reduce transient false detections. It does not eliminate systematic misclassification, and model-reported confidence should not be treated as a calibrated probability.
 
+**Checkpoint:** test visible, absent, ambiguous, and malformed cases while stationary. Only a valid, current observation of the requested target may transition the controller out of search.
+
 ## 4. Associate depth with the target
 
 1. Pair the RGB observation with temporally compatible depth.
@@ -131,6 +213,8 @@ front_clearance ≈ target_depth - b
 ```
 
 This approximation requires suitable mounting geometry and target alignment. Use calibrated transforms and robot geometry when those assumptions do not hold.
+
+**Checkpoint:** place the target at several measured distances and image positions. Record estimated depth, front-clearance estimate, manual clearance, valid-pixel ratio, and error. Resolve large or position-dependent errors before enabling forward motion.
 
 ## 5. Handle delayed inference explicitly
 
@@ -176,6 +260,15 @@ Freshness alone is not enough during rapid rotation: even a recent image may des
 | `HOLD` | Stop because required data or clearance is unavailable | Fresh valid observations permit replanning |
 
 Keep sensing callbacks focused on updating validated observations. Centralize motion decisions in the control loop so that callbacks cannot independently issue conflicting actions.
+
+Implement and test the states incrementally:
+
+1. Make every state publish zero velocity.
+2. Add bounded `SEARCH` rotation and its timeout.
+3. Add `ALIGN` with zero linear velocity.
+4. Add low-speed `APPROACH` with continuous validity checks.
+5. Add `VERIFY_STOP`, then require an explicit reset to leave `DONE`.
+6. Force each sensor-failure path and confirm it enters `HOLD`.
 
 The following is control pseudocode, not an executable ROS node:
 
@@ -269,9 +362,30 @@ Expose target description, topic names, speed limits, alignment tolerances, obse
 
 Parameter values are platform-specific. Explain how each value was measured or selected rather than presenting an untested universal configuration.
 
+Use a configuration record such as:
+
+| Parameter | Value | Unit | Selection evidence |
+| --- | --- | --- | --- |
+| Desired front clearance | `<fill in>` | m | Must include measured stopping margin |
+| Clearance tolerance | `<fill in>` | m | Based on depth noise and trial repeatability |
+| Maximum linear speed | `<fill in>` | m/s | Safe stopping tests |
+| Maximum angular speed | `<fill in>` | rad/s | Low-speed alignment tests |
+| Alignment entry/exit tolerance | `<fill in>` | normalized image error | Oscillation tests |
+| Observation timeout | `<fill in>` | s | Measured sensor and inference latency |
+| Search timeout | `<fill in>` | s | Test-area and rotation limits |
+
 ## 9. Evaluate and save evidence
 
 Use repeated trials with the same documented setup when comparing the baseline and an improved version. Record the number of trials and include failures.
+
+For each trial:
+
+1. Mark the robot and target starting poses.
+2. Start logging and record the configuration and code revision.
+3. Begin the task without manually correcting the robot.
+4. Stop the trial on success, timeout, safety intervention, or controller failure.
+5. Measure front clearance independently after the robot is stationary.
+6. Record the outcome and failure reason before resetting the scene.
 
 | Test | What it checks |
 | --- | --- |
@@ -317,6 +431,16 @@ Do not claim an improvement from a single successful video. Compare time togethe
 7. **Remaining limitations:** unsupported scenes, sensor limitations, and future work.
 
 Distinguish implemented behavior from proposed work. Save the final code, configuration, and robot execution recordings before ending the session. After saving results and stopping the robot, shut down the Orin using the lab's instructed shutdown procedure.
+
+### Final submission checklist
+
+- [ ] The report uses the official lab title and required format.
+- [ ] The implemented behavior is clearly separated from proposed future work.
+- [ ] Topic names, frames, QoS settings, parameters, and model version are documented.
+- [ ] Results include the number of trials, failures, and independently measured clearances.
+- [ ] Figures and videos identify the tested code revision.
+- [ ] Safety interventions and unsuccessful trials are reported.
+- [ ] Code, configuration, logs, and recordings are backed up.
 
 ## Scope and attribution
 
