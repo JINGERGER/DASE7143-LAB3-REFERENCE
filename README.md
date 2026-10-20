@@ -339,7 +339,7 @@ sequenceDiagram
     alt Response is current and valid
         Validator-->>Controller: Publish validated target observation
     else Response is stale or invalid
-        Validator-->>Controller: Reject response; do not authorize motion
+        Validator-->>Controller: Reject response and do not authorize motion
     end
 ```
 
