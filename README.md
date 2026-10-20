@@ -505,19 +505,26 @@ Expose target description, topic names, speed limits, alignment tolerances, obse
 
 Parameter values are platform-specific. Explain how each value was measured or selected rather than presenting an untested universal configuration.
 
-Use a configuration record such as:
+Record each parameter together with the evidence used to select it:
 
-| Parameter | Recorded value | Selection evidence |
-| --- | --- | --- |
-| Desired front clearance | `<value> m` | Measured stopping margin |
-| Clearance tolerance | `<value> m` | Depth noise and trial repeatability |
-| Maximum linear speed | `<value> m/s` | Safe stopping tests |
-| Maximum angular speed | `<value> rad/s` | Low-speed alignment tests |
-| Alignment entry/exit tolerance | `<normalized error>` | Oscillation tests |
-| Observation timeout | `<value> s` | Sensor and inference latency |
-| LiDAR timeout | `<value> s` | Point-cloud rate and jitter |
-| LiDAR protective distance | `<value> m` | Robot footprint and braking margin |
-| Search timeout | `<value> s` | Test-area and rotation limits |
+- **Desired front clearance:** `_____ m`
+  - Evidence: measured stopping margin.
+- **Clearance tolerance:** `_____ m`
+  - Evidence: depth noise and trial repeatability.
+- **Maximum linear speed:** `_____ m/s`
+  - Evidence: safe stopping tests.
+- **Maximum angular speed:** `_____ rad/s`
+  - Evidence: low-speed alignment tests.
+- **Alignment entry and exit tolerances:** `_____ / _____` normalized image error
+  - Evidence: alignment oscillation tests.
+- **Observation timeout:** `_____ s`
+  - Evidence: measured sensor and inference latency.
+- **LiDAR timeout:** `_____ s`
+  - Evidence: measured point-cloud rate and jitter.
+- **LiDAR protective distance:** `_____ m`
+  - Evidence: robot footprint and measured braking margin.
+- **Search timeout:** `_____ s`
+  - Evidence: test-area and rotation limits.
 
 ## 10. Troubleshooting
 
