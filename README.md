@@ -81,6 +81,30 @@ Complete the milestones in order. Do not start autonomous approach testing until
 | 7 | Test failure handling | Stale LiDAR, stale VLM data, target loss, and invalid depth always produce a stop |
 | 8 | Evaluate | Repeated trials, logs, measurements, and failure notes are saved |
 
+### System overview
+
+The perception paths remain independent until validated data reaches the controller. No single VLM response should command the chassis directly.
+
+```mermaid
+flowchart TB
+    RGB["RGB image<br/>/camera/camera/color/image_raw"] --> SCHED["Frame scheduler<br/>request ID + source timestamp"]
+    SCHED --> VLM["VLM inference"]
+    VLM --> VALID["Schema, identity,<br/>order and age validation"]
+    VALID --> TARGET["Validated target observation<br/>label + bounding box"]
+
+    DEPTH["Depth image<br/>/camera/camera/depth/image_rect_raw"] --> ASSOC["Target-depth association"]
+    TARGET --> ASSOC
+    ASSOC --> RANGE["Valid front-clearance estimate"]
+
+    LIDAR["LiDAR point cloud<br/>/cx/lslidar_point_cloud"] --> SAFETY["Footprint-aware<br/>motion-safety gate"]
+
+    TARGET --> CONTROL["State-machine controller"]
+    RANGE --> CONTROL
+    SAFETY --> CONTROL
+    CONTROL --> CMD["Bounded Twist command<br/>/cmd_vel"]
+    CMD --> BASE["Bunker Mini"]
+```
+
 ## Quick completion checklist
 
 - [ ] Define the target and a stopping interval entirely above 0.40 m.
@@ -297,6 +321,28 @@ Once the baseline works:
 - Use a faster tracker between semantic detections.
 - Revalidate target identity periodically and after tracking loss.
 
+The request ID and source timestamp preserve the relationship between each frame and its delayed response:
+
+```mermaid
+sequenceDiagram
+    participant Camera
+    participant Scheduler
+    participant VLM
+    participant Validator
+    participant Controller
+
+    Camera->>Scheduler: New frame and source timestamp
+    Scheduler->>VLM: Request ID and image
+    Controller->>Controller: Continue independent safety-controlled loop
+    VLM-->>Validator: Delayed response and request ID
+    Validator->>Validator: Check schema, order, age and robot motion
+    alt Response is current and valid
+        Validator-->>Controller: Publish validated target observation
+    else Response is stale or invalid
+        Validator-->>Controller: Reject response; do not authorize motion
+    end
+```
+
 Freshness alone is not enough during rapid rotation: even a recent image may describe a significantly different pose. Use pose-aware compensation, current-frame tracking, or stop before acting on the result.
 
 ## 6. Use an explicit control state machine
@@ -309,6 +355,26 @@ Freshness alone is not enough during rapid rotation: even a recent image may des
 | `VERIFY_STOP` | Command zero velocity and verify distance and stability | Success is confirmed or a new observation is needed |
 | `DONE` | Hold zero command | Explicit reset or new task |
 | `HOLD` | Stop because required data or clearance is unavailable | Fresh valid observations permit replanning |
+
+```mermaid
+stateDiagram-v2
+    [*] --> SEARCH
+    SEARCH --> ALIGN: target confirmed
+    SEARCH --> HOLD: timeout or unsafe data
+    ALIGN --> APPROACH: alignment stable
+    ALIGN --> HOLD: target or sensor invalid
+    APPROACH --> ALIGN: target outside alignment tolerance
+    APPROACH --> VERIFY_STOP: stopping condition reached
+    APPROACH --> HOLD: obstacle or invalid data
+    VERIFY_STOP --> DONE: clearance and stability confirmed
+    VERIFY_STOP --> ALIGN: adjustment required
+    HOLD --> SEARCH: safe reset with target absent
+    HOLD --> ALIGN: fresh data with target confirmed
+    DONE --> SEARCH: new task or explicit reset
+
+    state "HOLD: zero velocity" as HOLD
+    state "DONE: zero velocity" as DONE
+```
 
 Keep sensing callbacks focused on updating validated observations. Centralize motion decisions in the control loop so that callbacks cannot independently issue conflicting actions.
 
