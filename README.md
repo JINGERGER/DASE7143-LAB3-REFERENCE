@@ -120,18 +120,16 @@ flowchart TB
 
 ## Why the supplied scaffold needs improvement
 
-The supplied reference is intentionally incomplete: missing subscriptions, parameters, and control logic are student exercises. The more important engineering issues are the assumptions connecting perception to motion.
+The supplied reference is intentionally incomplete: missing subscriptions, parameters, and control logic are student exercises. The more important engineering issues are the assumptions connecting perception to motion:
 
-| Reference behavior or assumption | Why it matters | Proposed improvement |
-| --- | --- | --- |
-| Measure the central 20 × 20 depth patch | The patch may contain a wall, floor, or another object rather than the target | Associate depth with the detected target region |
-| Accept `trash_bin:left/right/middle` without an image timestamp | A delayed answer may describe a previous robot orientation | Attach the source image timestamp and reject obsolete observations |
-| Match output using substring searches | Explanations, contradictory answers, or multiple objects can trigger unintended actions | Validate a strict output schema |
-| React to detections only in search states | Alignment and approach need continued observation | Check target validity and alignment throughout motion |
-| Compute turns from speed × duration | Actual rotation depends on drivetrain behavior and surface conditions | Use visual feedback and, when available, odometry |
-| Keep the previous distance after a depth exception | Old measurements may continue to authorize motion | Invalidate failed measurements and enforce freshness limits |
-| Assume depth is `16UC1` in millimeters | A different encoding or unit convention produces incorrect distances | Inspect the driver contract and explicitly normalize units |
-| Use a single stopping threshold | Camera offset, latency, braking, and noise affect final clearance | Define the measurement reference and include a measured margin |
+1. **Target-specific depth:** a central 20 × 20 patch may contain the wall, floor, or another object. Sample depth from the validated target region instead.
+2. **Observation timing:** `trash_bin:left/right/middle` without an image timestamp may describe an earlier robot orientation. Attach the source timestamp and reject obsolete observations.
+3. **Strict parsing:** substring matching can accept explanations, contradictions, or multiple objects. Validate a defined output schema.
+4. **Continuous observation:** alignment and approach cannot rely only on detections made during search. Recheck target validity and alignment throughout motion.
+5. **Closed-loop turning:** speed multiplied by duration does not guarantee an angle on every surface. Use visual feedback and, when available, odometry.
+6. **Fail-closed depth:** retaining distance after a conversion error may authorize motion from old data. Invalidate failed or stale measurements.
+7. **Explicit depth units:** assuming `16UC1` millimetres fails with a different encoding or driver convention. Inspect and normalize the actual source.
+8. **Measured stopping margin:** one threshold ignores latency, braking, camera offset, and noise. Define the reference point and include a measured margin.
 
 These are limitations of the supplied scaffold, not claims about every possible completion of its missing control loop.
 
@@ -209,15 +207,23 @@ The prerequisite lab controls the Bunker Mini using `geometry_msgs/msg/Twist` on
 
 For camera subscriptions, select QoS compatible with the actual publisher. A Reliable subscriber cannot receive from a Best Effort publisher. See the [ROS 2 QoS documentation](https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Quality-of-Service-Settings.html); use the documentation matching your installed distribution.
 
-Record the interface contract before writing control logic:
+Record the interface contract before writing control logic. Keep identifiers separate from runtime properties so both tables remain readable.
 
-| Interface | Topic | Message type | QoS | Frame/units | Expected rate |
-| --- | --- | --- | --- | --- | --- |
-| RGB image | `/camera/camera/color/image_raw` | verify with `ros2 topic list -t` | `<fill in>` | `<fill in>` | `<measure>` |
-| Depth image | `/camera/camera/depth/image_rect_raw` | verify with `ros2 topic list -t` | `<fill in>` | `<fill in>` | `<measure>` |
-| Inference result | `/vlm_result` | verify with `ros2 topic list -t` | `<fill in>` | text plus source metadata if extended | `<measure>` |
-| LiDAR point cloud | `/cx/lslidar_point_cloud` | verify with `ros2 topic list -t` | `<fill in>` | `<fill in>` | `<measure>` |
-| Velocity command | `/cmd_vel` | `geometry_msgs/msg/Twist` | `<fill in>` | m/s and rad/s | controller-dependent |
+| Interface | Default topic | Message type |
+| --- | --- | --- |
+| RGB image | `/camera/camera/color/image_raw` | `<verify>` |
+| Depth image | `/camera/camera/depth/image_rect_raw` | `<verify>` |
+| Inference result | `/vlm_result` | `<verify>` |
+| LiDAR point cloud | `/cx/lslidar_point_cloud` | `<verify>` |
+| Velocity command | `/cmd_vel` | `geometry_msgs/msg/Twist` |
+
+| Interface | QoS | Frame or units | Measured rate |
+| --- | --- | --- | --- |
+| RGB image | `<record>` | `<record>` | `<record>` |
+| Depth image | `<record>` | `<record encoding and units>` | `<record>` |
+| Inference result | `<record>` | `<record metadata contract>` | `<record>` |
+| LiDAR point cloud | `<record>` | `<record>` | `<record>` |
+| Velocity command | `<record>` | m/s and rad/s | controller-dependent |
 
 **Checkpoint:** while the robot is stationary, each required subscription receives data at the expected rate and publishing an explicit zero command keeps the robot stopped.
 
@@ -349,12 +355,12 @@ Freshness alone is not enough during rapid rotation: even a recent image may des
 
 | State | Behavior | Exit condition |
 | --- | --- | --- |
-| `SEARCH` | Rotate in bounded steps or under continuous fresh perception | A target is confirmed, or search times out |
-| `ALIGN` | Correct horizontal target error | Alignment is stable; otherwise stop if observation is invalid |
-| `APPROACH` | Move forward with bounded speed and continued alignment checks | Stopping distance reached, alignment lost, or perception becomes invalid |
-| `VERIFY_STOP` | Command zero velocity and verify distance and stability | Success is confirmed or a new observation is needed |
-| `DONE` | Hold zero command | Explicit reset or new task |
-| `HOLD` | Stop because required data or clearance is unavailable | Fresh valid observations permit replanning |
+| `SEARCH` | Bounded rotation | Target confirmed or timeout |
+| `ALIGN` | Correct horizontal error | Stable alignment or invalid observation |
+| `APPROACH` | Bounded forward motion | Stop distance, alignment loss, or invalid data |
+| `VERIFY_STOP` | Zero velocity; verify clearance | Success or further adjustment |
+| `DONE` | Hold zero velocity | Reset or new task |
+| `HOLD` | Stop on unavailable safety data | Fresh valid data and replanning |
 
 ```mermaid
 stateDiagram-v2
@@ -501,17 +507,17 @@ Parameter values are platform-specific. Explain how each value was measured or s
 
 Use a configuration record such as:
 
-| Parameter | Value | Unit | Selection evidence |
-| --- | --- | --- | --- |
-| Desired front clearance | `<fill in>` | m | Must include measured stopping margin |
-| Clearance tolerance | `<fill in>` | m | Based on depth noise and trial repeatability |
-| Maximum linear speed | `<fill in>` | m/s | Safe stopping tests |
-| Maximum angular speed | `<fill in>` | rad/s | Low-speed alignment tests |
-| Alignment entry/exit tolerance | `<fill in>` | normalized image error | Oscillation tests |
-| Observation timeout | `<fill in>` | s | Measured sensor and inference latency |
-| LiDAR timeout | `<fill in>` | s | Measured point-cloud rate and jitter |
-| LiDAR protective distance | `<fill in>` | m | Robot footprint and measured braking margin |
-| Search timeout | `<fill in>` | s | Test-area and rotation limits |
+| Parameter | Recorded value | Selection evidence |
+| --- | --- | --- |
+| Desired front clearance | `<value> m` | Measured stopping margin |
+| Clearance tolerance | `<value> m` | Depth noise and trial repeatability |
+| Maximum linear speed | `<value> m/s` | Safe stopping tests |
+| Maximum angular speed | `<value> rad/s` | Low-speed alignment tests |
+| Alignment entry/exit tolerance | `<normalized error>` | Oscillation tests |
+| Observation timeout | `<value> s` | Sensor and inference latency |
+| LiDAR timeout | `<value> s` | Point-cloud rate and jitter |
+| LiDAR protective distance | `<value> m` | Robot footprint and braking margin |
+| Search timeout | `<value> s` | Test-area and rotation limits |
 
 ## 10. Troubleshooting
 
@@ -650,12 +656,17 @@ For each trial, save:
 - Video and relevant ROS logs or bag files.
 - Code revision and model/prompt version.
 
-Use a table such as:
+Use two compact comparison tables instead of one wide table:
 
-| Version | Trials | Successes | Median completion time | Final clearance range | Failure notes |
-| --- | --- | --- | --- | --- | --- |
-| Baseline | Not measured | — | — | — | — |
-| Improved | Not measured | — | — | — | — |
+| Version | Trials | Success rate | Median time |
+| --- | --- | --- | --- |
+| Baseline | `<n>` | `<value>%` | `<value> s` |
+| Improved | `<n>` | `<value>%` | `<value> s` |
+
+| Version | Final clearance range | Main failure modes |
+| --- | --- | --- |
+| Baseline | `<min–max> m` | `<record>` |
+| Improved | `<min–max> m` | `<record>` |
 
 Do not claim an improvement from a single successful video. Compare time together with success rate and stopping accuracy.
 
