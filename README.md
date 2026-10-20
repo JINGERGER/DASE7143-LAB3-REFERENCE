@@ -1,6 +1,6 @@
-# DASE7143 Lab 3 Manual: Target Search and Approach
+# DASE7143 Lab 3 Implementation and Optimization Guide
 
-This manual provides a practical workflow for building, testing, and evaluating a ROS 2 robot that:
+This guide provides a practical workflow for building, testing, and evaluating a ROS 2 robot that:
 
 1. searches for the required trash bin, which starts outside the camera field of view;
 2. aligns the object with the camera centre;
@@ -513,7 +513,107 @@ Use a configuration record such as:
 | LiDAR protective distance | `<fill in>` | m | Robot footprint and measured braking margin |
 | Search timeout | `<fill in>` | s | Test-area and rotation limits |
 
-## 10. Evaluate and save evidence
+## 10. Troubleshooting
+
+Always command zero velocity before changing drivers, topic settings, QoS, transforms, or control parameters. Diagnose one interface at a time while the robot is stationary.
+
+### Topic exists but the callback receives no data
+
+This commonly indicates incompatible QoS rather than an incorrect topic name.
+
+1. Inspect both endpoints:
+
+   ```bash
+   ros2 topic info --verbose <topic>
+   ```
+
+2. Compare reliability, durability, history, and depth. Camera and LiDAR drivers commonly use a sensor-data profile with Best Effort reliability.
+3. Configure the subscriber to request a profile compatible with the publisher. In `rclpy`, `qos_profile_sensor_data` is a useful starting point for sensor streams, but verify it against the actual endpoint.
+4. Confirm the callback rate with a counter or throttled log; do not infer delivery merely because the topic appears in `ros2 topic list`.
+
+If changing QoS restores delivery, record the final profile in the interface-contract table. Do not change every publisher to Reliable without considering latency, packet loss, and resource use.
+
+### Bunker Mini does not respond over CAN
+
+Symptoms include no chassis feedback, launch errors, or `/cmd_vel` having no effect.
+
+1. Detect the interface again; it is not always `can2`:
+
+   ```bash
+   sh ~/find_all_can_port.sh
+   ip -details -statistics link show <can_port>
+   ```
+
+2. Confirm that the interface is `UP`, uses the expected 500000 bit/s bitrate, and does not report `BUS-OFF` or increasing error counters.
+3. With the base stationary, verify traffic:
+
+   ```bash
+   candump <can_port>
+   ```
+
+4. Pass the same detected interface to `bunker_base.launch.py`.
+5. Ensure only one process configures or owns the interface. If recovery or reconfiguration is required, stop the chassis node and follow the lab's CAN setup procedure.
+
+Perform the first command test with the wheels raised or the area cleared, use a low bounded command, and publish zero velocity immediately afterward.
+
+### RGB detection and depth do not refer to the same pixel
+
+The default depth topic may be rectified in the depth-camera frame but not registered to the RGB pixel grid. A bounding box from the RGB image cannot safely index an unaligned depth image.
+
+Check:
+
+- RGB and depth image width and height;
+- `frame_id` and source timestamp;
+- RGB and depth `camera_info` intrinsics;
+- whether the RealSense driver publishes an aligned-depth-to-color topic; and
+- whether inference resizing, cropping, or letterboxing has been reversed.
+
+If supported by the installed driver, enable depth alignment and verify the resulting topic and frame using:
+
+```bash
+ros2 param list /camera/camera
+ros2 topic list -t | grep -E 'aligned|depth|camera_info'
+ros2 topic echo <aligned_depth_camera_info_topic> --once
+```
+
+Otherwise, transform and project depth into the RGB camera model explicitly. Also check the encoding: `16UC1` is normally millimetres and `32FC1` is normally metres under REP 118, but validate the actual driver output.
+
+Test alignment while stationary by placing the target at the centre and near both image edges. If depth changes to the background at the edges, do not enable forward motion.
+
+### VLM results arrive late or in the wrong order
+
+The `/vlm_result` publication rate is not the same as end-to-end inference latency. Measure from the source image timestamp to result reception.
+
+- Assign every submitted frame a request ID and preserve its source timestamp.
+- Allow at most one active request, or use a bounded queue where the newest frame replaces obsolete pending frames.
+- Reject responses older than the configured observation timeout.
+- Reject a result if the robot has moved enough that the source view is no longer valid.
+- Keep the control timer independent of the network request.
+- Stop on timeout; never reuse the last successful detection indefinitely.
+
+The prerequisite `std_msgs/msg/String`-style result cannot carry source metadata by itself. Extend the adapter with a custom message or a paired metadata topic rather than asking the model to generate timestamps.
+
+Log at least:
+
+```text
+request_id, source_stamp, submit_time, receive_time,
+observation_age, controller_state, accepted_or_rejected_reason
+```
+
+If asynchronous handling is not yet reliable, return to the stop-observe-act baseline before testing continuous motion.
+
+### Rapid isolation checklist
+
+1. Stop the robot and publish zero velocity.
+2. Confirm the expected nodes and topics exist.
+3. Verify endpoint types and QoS.
+4. Measure LiDAR, RGB, depth, and VLM rates separately.
+5. Validate timestamps, frames, image dimensions, and depth units.
+6. Test perception without motion.
+7. Test chassis motion without autonomous perception.
+8. Re-enable the integrated controller at minimum speed.
+
+## 11. Evaluate and save evidence
 
 Use repeated trials with the same documented setup when comparing the baseline and an improved version. Record the number of trials and include failures.
 
@@ -559,7 +659,7 @@ Use a table such as:
 
 Do not claim an improvement from a single successful video. Compare time together with success rate and stopping accuracy.
 
-## 11. Structure the report
+## 12. Structure the report
 
 1. **System overview:** perception, depth association, control, and ROS interfaces.
 2. **Reference limitations:** which problems you addressed and why.
