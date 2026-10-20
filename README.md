@@ -2,21 +2,21 @@
 
 This manual provides a practical workflow for building, testing, and evaluating a ROS 2 robot that:
 
-1. searches for a requested object;
+1. searches for the required trash bin, which starts outside the camera field of view;
 2. aligns the object with the camera centre;
 3. approaches it safely; and
 4. stops with a front clearance **greater than 0.40 m**.
 
-Rotation in place may be used during the initial search.
+Rotation in place may be used during the initial search. Supporting other target objects is an extension and should be implemented through configuration rather than by duplicating control code.
 
 > [!IMPORTANT]
-> This repository is an engineering guide, not an executable ROS 2 package or an official replacement for the course handout. Confirm the official lab name, required topics, robot platform, and submission format with the teaching team.
+> This repository is an engineering guide, not an executable ROS 2 package or an official replacement for the course handout. It assumes the Bunker Mini sensor and VLM setup completed in the prerequisite lab. Confirm the official lab title and submission format with the teaching team.
 
 ## Learning outcomes
 
 After completing the lab, you should be able to:
 
-- connect RGB, depth, inference-result, and velocity-command interfaces in ROS 2;
+- connect LiDAR, RGB, depth, inference-result, and velocity-command interfaces in ROS 2;
 - associate a detected target with a valid depth measurement;
 - reject malformed, stale, or out-of-order perception results;
 - implement search, alignment, approach, and stopping as a state machine;
@@ -27,15 +27,36 @@ After completing the lab, you should be able to:
 
 ### Required resources
 
-- A ROS 2 workspace and the robot packages used in the prerequisite lab.
-- Access to the robot, RGB/depth camera, and target objects.
-- A configured object-recognition or vision-language-model interface.
+- The Bunker Mini and Orin used in the prerequisite lab.
+- The 32-line LiDAR and Intel RealSense D555 RGB/depth camera.
+- The configured `simple_vlm` package and group DashScope API access.
+- The ROS 2 workspace and Bunker, LiDAR, camera, and OctoMap packages used previously.
+- A trash bin for the required task and any additional target objects used for extensions.
 - A cleared test area, tape measure, and accessible emergency stop.
 - Permission to record video or ROS bag data, if required for the report.
 
-### Prerequisite knowledge
+### Required prerequisite-lab completion
 
-You should already know how to build a ROS 2 workspace, run nodes, inspect topics, and publish a safe zero-velocity command. Revisit the prerequisite lab before moving the robot if any of these tasks are unfamiliar.
+The prerequisite lab contains **four Checkpoints**. Complete them, obtain TA verification, include the requested evidence in the presentation video, and answer its Questions in the report:
+
+| Prerequisite checkpoint | Required result |
+| --- | --- |
+| LiDAR and OctoMap | Visualize the LiDAR point cloud and the octree generated on `/octomap_full` |
+| Stereo camera | Visualize live RGB and depth images in RViz and measure their rates and bandwidth |
+| Chassis motion | Configure the detected CAN interface, launch `bunker_base`, and verify rotation through `/cmd_vel` |
+| VLM with ROS 2 | Run `simple_vlm` and observe image-analysis output on `/vlm_result` |
+
+The prerequisite lab establishes these default interfaces:
+
+| Data | Default topic |
+| --- | --- |
+| LiDAR point cloud | `/cx/lslidar_point_cloud` |
+| RGB image | `/camera/camera/color/image_raw` |
+| Depth image | `/camera/camera/depth/image_rect_raw` |
+| VLM result | `/vlm_result` |
+| Chassis command | `/cmd_vel` |
+
+Treat these as known starting points, not immutable values. Use `ros2 topic list -t` on the current robot to verify that the running configuration still matches them. The CAN interface is machine-dependent; use the value reported by `find_all_can_port.sh` rather than copying `can2` blindly.
 
 ### Safety rules
 
@@ -52,17 +73,19 @@ Complete the milestones in order. Do not start autonomous approach testing until
 | Milestone | Task | Checkpoint |
 | --- | --- | --- |
 | 1 | Inspect ROS interfaces | Correct topics, message types, QoS, frames, and units are recorded |
-| 2 | Validate perception | The requested target is detected and malformed outputs are rejected |
-| 3 | Validate target depth | Stationary distance estimates agree with manual measurements |
-| 4 | Implement search and alignment | The robot finds and centres targets at low speed |
-| 5 | Implement approach and stop | The robot stops inside the declared safe interval |
-| 6 | Test failure handling | Stale data, target loss, and invalid depth always produce a stop |
-| 7 | Evaluate | Repeated trials, logs, measurements, and failure notes are saved |
+| 2 | Validate LiDAR safety data | Fresh point clouds produce a footprint-aware protective region |
+| 3 | Validate perception | The requested target is detected and malformed outputs are rejected |
+| 4 | Validate target depth | Stationary distance estimates agree with manual measurements |
+| 5 | Implement search and alignment | The robot finds and centres targets at low speed |
+| 6 | Implement approach and stop | The robot stops inside the declared safe interval |
+| 7 | Test failure handling | Stale LiDAR, stale VLM data, target loss, and invalid depth always produce a stop |
+| 8 | Evaluate | Repeated trials, logs, measurements, and failure notes are saved |
 
 ## Quick completion checklist
 
 - [ ] Define the target and a stopping interval entirely above 0.40 m.
 - [ ] Record topic names, message types, QoS, frames, and depth units.
+- [ ] Define and test a LiDAR-based protective stop region around the robot path.
 - [ ] Validate structured perception output and source timestamps.
 - [ ] Measure depth only inside the target region.
 - [ ] Implement `SEARCH`, `ALIGN`, `APPROACH`, `VERIFY_STOP`, `DONE`, and `HOLD`.
@@ -106,21 +129,48 @@ A lower bound alone is insufficient: stopping several meters away would satisfy 
 
 ## 2. Inspect the robot interfaces
 
+Source the workspace in every new terminal before launching workspace packages:
+
+```bash
+cd ~/ros2_ws
+source install/setup.bash
+```
+
+Keep each long-running launch command open and use another terminal for inspection. Bring up only the components required for the current test:
+
+```bash
+# LiDAR
+ros2 launch lslidar_driver lslidar_cx_launch.py
+
+# RealSense D555
+ros2 launch realsense2_camera rs_launch.py
+
+# Bunker Mini base; replace <can_port> with the detected interface
+ros2 launch bunker_base bunker_base.launch.py port_name:=<can_port>
+
+# VLM; use the existing group configuration
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
+ros2 run simple_vlm simple_vlm_node --ros-args \
+  -p config_file:=src/simple_vlm/config.yaml
+```
+
+Do not place an API key in source code, screenshots, logs, or this repository.
+
 Before implementing subscriptions, inspect the actual running system:
 
 ```bash
 ros2 topic list -t
-ros2 topic info --verbose <rgb_topic>
-ros2 topic info --verbose <depth_topic>
-ros2 topic info --verbose <vlm_result_topic>
-ros2 topic info --verbose <velocity_command_topic>
-ros2 topic hz <rgb_topic>
-ros2 topic hz <depth_topic>
-ros2 topic echo <depth_topic> --once
+ros2 topic info --verbose /camera/camera/color/image_raw
+ros2 topic info --verbose /camera/camera/depth/image_rect_raw
+ros2 topic info --verbose /vlm_result
+ros2 topic info --verbose /cmd_vel
+ros2 topic hz /camera/camera/color/image_raw
+ros2 topic hz /camera/camera/depth/image_rect_raw
+ros2 topic echo /vlm_result
 ros2 interface show <message_type>
 ```
 
-Replace the placeholders with actual topic names. Confirm:
+Replace any default topic that differs on the running system. Confirm:
 
 - ROS 2 distribution and installed camera driver.
 - RGB and depth message types, encodings, frame IDs, and timestamps.
@@ -131,7 +181,7 @@ Replace the placeholders with actual topic names. Confirm:
 - Publisher/subscriber QoS compatibility.
 - Camera position relative to the robot's front boundary.
 
-Do not assume the reference `/cmd_vel` topic and `Twist` message match every robot configuration. Ensure only the intended controller owns motion commands, or use the platform's command arbitration mechanism.
+The prerequisite lab controls the Bunker Mini using `geometry_msgs/msg/Twist` on `/cmd_vel`; verify this before use. Ensure only the intended controller owns motion commands, or use the platform's command arbitration mechanism.
 
 For camera subscriptions, select QoS compatible with the actual publisher. A Reliable subscriber cannot receive from a Best Effort publisher. See the [ROS 2 QoS documentation](https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Quality-of-Service-Settings.html); use the documentation matching your installed distribution.
 
@@ -139,10 +189,11 @@ Record the interface contract before writing control logic:
 
 | Interface | Topic | Message type | QoS | Frame/units | Expected rate |
 | --- | --- | --- | --- | --- | --- |
-| RGB image | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` |
-| Depth image | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` |
-| Inference result | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` |
-| Velocity command | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` | `<fill in>` |
+| RGB image | `/camera/camera/color/image_raw` | verify with `ros2 topic list -t` | `<fill in>` | `<fill in>` | `<measure>` |
+| Depth image | `/camera/camera/depth/image_rect_raw` | verify with `ros2 topic list -t` | `<fill in>` | `<fill in>` | `<measure>` |
+| Inference result | `/vlm_result` | verify with `ros2 topic list -t` | `<fill in>` | text plus source metadata if extended | `<measure>` |
+| LiDAR point cloud | `/cx/lslidar_point_cloud` | verify with `ros2 topic list -t` | `<fill in>` | `<fill in>` | `<measure>` |
+| Velocity command | `/cmd_vel` | `geometry_msgs/msg/Twist` | `<fill in>` | m/s and rad/s | controller-dependent |
 
 **Checkpoint:** while the robot is stationary, each required subscription receives data at the expected rate and publishing an explicit zero command keeps the robot stopped.
 
@@ -338,25 +389,45 @@ This is a tuning model, not a certified guarantee. Measure latency and braking b
 
 Do not automatically reverse after overshooting unless rear clearance is monitored. Mark the trial unsuccessful and stop when recovery is not supported.
 
-## 7. Add operational safeguards
+## 7. Use LiDAR for motion safety
 
-- Stop forward motion immediately when target or depth validity is lost.
+The depth camera estimates distance to the selected target; it does not cover the robot's full path or footprint. Use the LiDAR stream as a separate motion-safety input.
+
+At minimum:
+
+1. transform or interpret LiDAR points in a robot-fixed frame;
+2. filter points by valid range and height where appropriate;
+3. define a protective region covering the robot footprint plus braking margin;
+4. stop if an obstacle enters that region;
+5. invalidate LiDAR safety status when the point cloud becomes stale; and
+6. apply the check during both rotation and forward motion.
+
+Do not classify the selected target as a generic obstacle that permanently prevents the required approach. The controller must distinguish the target stopping condition from unrelated route obstacles, for example by combining target localization, depth, and spatial gating. Validate this behavior at low speed with a person ready at the emergency stop.
+
+Using `/octomap_full` for persistent mapping, frontier-based spatial exploration, or planning around obstacles is an optional extension. A direct point-cloud safety check may be simpler for the baseline, but it must account for the robot footprint and the LiDAR blind region.
+
+**Checkpoint:** while commanding only low-speed test motion, introduce an unrelated obstacle into the protective region and verify that the robot stops. Also stop the LiDAR publisher and verify that stale data cannot authorize continued movement.
+
+## 8. Add operational safeguards
+
+- Stop motion immediately when required LiDAR, target, or depth validity is lost.
 - Set maximum search duration, movement duration, and approach travel limits.
 - Use the base controller's command watchdog so process failure cannot leave a persistent movement command.
 - Publish zero velocity during normal shutdown; a final message alone is not a substitute for a watchdog.
 - Keep a physical emergency stop accessible during hardware tests.
 - Treat obstacle detection separately from target-distance estimation: one target depth patch cannot protect the robot's entire footprint.
 
-Obstacle avoidance and spatial exploration are optional extensions. State clearly whether they are implemented. Without obstacle coverage, restrict demonstrations to a supervised, cleared test area.
+Full obstacle avoidance and spatial exploration are optional extensions. A LiDAR-based protective stop and supervised, cleared test area remain required for safe baseline testing.
 
-## 8. Tune in a useful order
+## 9. Tune in a useful order
 
-1. Verify message delivery, coordinate conventions, and depth units.
-2. Verify target localization and distance while the robot is stationary.
-3. Test low-speed rotation and alignment.
-4. Test short approaches with generous stopping clearance.
-5. Test target loss, invalid depth, and delayed inference.
-6. Repeat trials before increasing speed.
+1. Verify message delivery, coordinate conventions, depth units, and LiDAR freshness.
+2. Verify the LiDAR protective stop at low speed.
+3. Verify target localization and distance while the robot is stationary.
+4. Test low-speed rotation and alignment.
+5. Test short approaches with generous stopping clearance.
+6. Test target loss, invalid depth, delayed inference, and LiDAR loss.
+7. Repeat trials before increasing speed.
 
 Expose target description, topic names, speed limits, alignment tolerances, observation timeouts, stopping clearance, and search limits as ROS parameters.
 
@@ -372,9 +443,11 @@ Use a configuration record such as:
 | Maximum angular speed | `<fill in>` | rad/s | Low-speed alignment tests |
 | Alignment entry/exit tolerance | `<fill in>` | normalized image error | Oscillation tests |
 | Observation timeout | `<fill in>` | s | Measured sensor and inference latency |
+| LiDAR timeout | `<fill in>` | s | Measured point-cloud rate and jitter |
+| LiDAR protective distance | `<fill in>` | m | Robot footprint and measured braking margin |
 | Search timeout | `<fill in>` | s | Test-area and rotation limits |
 
-## 9. Evaluate and save evidence
+## 10. Evaluate and save evidence
 
 Use repeated trials with the same documented setup when comparing the baseline and an improved version. Record the number of trials and include failures.
 
@@ -420,7 +493,7 @@ Use a table such as:
 
 Do not claim an improvement from a single successful video. Compare time together with success rate and stopping accuracy.
 
-## 10. Structure the report
+## 11. Structure the report
 
 1. **System overview:** perception, depth association, control, and ROS interfaces.
 2. **Reference limitations:** which problems you addressed and why.
@@ -435,6 +508,7 @@ Distinguish implemented behavior from proposed work. Save the final code, config
 ### Final submission checklist
 
 - [ ] The report uses the official lab title and required format.
+- [ ] All four prerequisite-lab Checkpoints were verified by the TA and their Questions were answered.
 - [ ] The implemented behavior is clearly separated from proposed future work.
 - [ ] Topic names, frames, QoS settings, parameters, and model version are documented.
 - [ ] Results include the number of trials, failures, and independently measured clearances.
@@ -444,6 +518,6 @@ Distinguish implemented behavior from proposed work. Save the final code, config
 
 ## Scope and attribution
 
-This guide is based on the supplied DASE7143 target-search exercise and its `UGVTrashCenterNode` Python scaffold. It is an improvement proposal, not an official replacement for the course handout or grading requirements.
+This guide is based on the supplied DASE7143 Bunker Mini prerequisite lab, target-search exercise, and `UGVTrashCenterNode` Python scaffold. It assumes the prerequisite LiDAR, RealSense D555, chassis, and `simple_vlm` Checkpoints have been completed. It is an improvement proposal, not an official replacement for the course handout or grading requirements.
 
 Repository: [JINGERGER/DASE7143-LAB3-REFERENCE](https://github.com/JINGERGER/DASE7143-LAB3-REFERENCE)
