@@ -7,7 +7,7 @@ This guide provides a practical workflow for building, testing, and evaluating a
 3. approaches it safely; and
 4. stops with a front clearance **greater than 0.40 m**.
 
-Rotation in place may be used during the initial search. Supporting other target objects is an extension and should be implemented through configuration rather than by duplicating control code.
+Rotation in place may be used during the initial search. Supporting other target objects is an extension and should be implemented through configuration rather than by duplicating control code. After the required task is complete, groups may attempt **one** Extra Credit option.
 
 > [!IMPORTANT]
 > This repository is an engineering guide, not an executable ROS 2 package or an official replacement for the course handout. It assumes the Bunker Mini sensor and VLM setup completed in the prerequisite lab. Confirm the official lab title and submission format with the teaching team.
@@ -65,6 +65,7 @@ Treat these as known starting points, not immutable values. Use `ros2 topic list
 - Keep a person beside the emergency stop during every hardware trial.
 - Use a cleared, supervised test area; this exercise is not a complete collision-avoidance system.
 - Stop immediately when target, depth, or obstacle information becomes invalid.
+- For two-robot Extra Credit tests, staff an emergency stop on **each** Bunker and keep a larger cleared area than a single-robot trial.
 
 ## Lab workflow
 
@@ -80,6 +81,7 @@ Complete the milestones in order. Do not start autonomous approach testing until
 | 6 | Implement approach and stop | The robot stops inside the declared safe interval |
 | 7 | Test failure handling | Stale LiDAR, stale VLM data, target loss, and invalid depth always produce a stop |
 | 8 | Evaluate | Repeated trials, logs, measurements, and failure notes are saved |
+| Extra Credit | Complete Option A or Option B | The chosen option meets its own success criteria without relaxing required safety stops |
 
 ### System overview
 
@@ -117,6 +119,7 @@ flowchart TB
 - [ ] Test each state independently before running the complete sequence.
 - [ ] Run repeated trials and measure final clearance from the robot front.
 - [ ] Save configuration, code revision, logs, videos, and report evidence.
+- [ ] Optional: complete Extra Credit Option A or Option B after the required task.
 
 ## Why the supplied scaffold needs improvement
 
@@ -684,7 +687,7 @@ Do not claim an improvement from a single successful video. Compare time togethe
 3. **Implementation:** core code and parameter choices.
 4. **Timing and failure handling:** stale observations, missing depth, and target loss.
 5. **Evaluation:** repeated trials, quantitative results, and failure analysis.
-6. **Optional extensions:** what was implemented and its measured benefit.
+6. **Optional extensions:** Extra Credit option chosen, if any, with measured benefit over the required baseline.
 7. **Remaining limitations:** unsupported scenes, sensor limitations, and future work.
 
 Distinguish implemented behavior from proposed work. Save the final code, configuration, and robot execution recordings before ending the session. After saving results and stopping the robot, shut down the Orin using the lab's instructed shutdown procedure.
@@ -699,6 +702,119 @@ Distinguish implemented behavior from proposed work. Save the final code, config
 - [ ] Figures and videos identify the tested code revision.
 - [ ] Safety interventions and unsuccessful trials are reported.
 - [ ] Code, configuration, logs, and recordings are backed up.
+- [ ] Extra Credit, if attempted, names the option, the partner group or TA-selected object, and the measured outcome.
+
+## 13. Extra Credit
+
+Extra Credit is optional and is available only after the required trash-bin search-and-approach task works under the safety rules in this guide. Attempt **one** option. Do not treat Extra Credit as a reason to disable LiDAR protective stops, observation timeouts, or zero-velocity hold behavior.
+
+LiDAR–camera extrinsic calibration is not an Extra Credit target by itself. Approximate, tape-measured transforms are acceptable if the chosen option still meets its success criteria. A more accurate extrinsic is useful only when it is used to associate the visual target with LiDAR obstacles.
+
+### Option A: Cooperative Bunker following
+
+Two groups share one demonstration. One Bunker is the **leader**; the other is the **follower**. The follower must keep a safe distance behind the leader, continue following through a slow bounded path, and stop when the leader stops.
+
+This option is a relative-motion task, not a second copy of trash-bin search. The leader should be teleoperated or driven along a short, pre-agreed path at low speed. Do not run two independent autonomous search controllers in the same arena.
+
+#### Setup
+
+1. Mark a larger cleared lane than a single-robot trial.
+2. Assign one person to each emergency stop.
+3. Agree which robot is leader and which is follower. Each robot keeps its own ROS 2 graph; Extra Credit does not require sharing `/cmd_vel` over the network.
+4. Place the follower behind the leader, with the leader initially visible.
+5. Choose a following interval entirely above 0.40 m, for example 0.80 m to 1.50 m. Record the interval before the trial.
+
+#### Required behavior
+
+- Confirm that the followed object is the other Bunker, not a person, wall, or trash bin.
+- Use LiDAR, or LiDAR plus depth, to regulate following range and heading.
+- Keep the LiDAR protective stop active. The leader is the object being followed, not a generic obstacle that must permanently freeze the follower, but contact remains a failure.
+- If the leader is lost, command zero velocity, attempt a bounded reacquire, and enter `HOLD` on timeout.
+- If any required sensor becomes stale, stop immediately.
+- When the leader stops, the follower must stop inside the declared following interval and remain stopped.
+
+#### Demonstration protocol
+
+1. Show a stationary identity check: the follower reports the other Bunker and its estimated range.
+2. Move the leader slowly forward, then turn, then stop.
+3. Repeat at least three trials, including one leader-loss case where the leader leaves the camera view.
+4. Record contact events, e-stop interventions, following range, and time until the follower stops after the leader stops.
+
+#### Success criteria
+
+A trial counts as successful only if all of the following hold:
+
+- no contact between robots or with the environment;
+- the follower does not chase a distractor;
+- the stopped gap is inside the declared interval and greater than 0.40 m;
+- leader loss produces a stop rather than unbounded search.
+
+Both groups may describe the same demonstration, but each report must identify the group's own robot role, code revision, and measured follower behavior.
+
+### Option B: Hidden TA-selected object with exploration memory
+
+A TA selects the target at demonstration time from a small published set, for example trash bin, water bottle, umbrella, or backpack. The object starts **outside the camera field of view and is not findable by rotation in place alone**. Typical placements are behind a barrier, in another sector of the test area, or otherwise occluded from the start pose.
+
+The required Lab 3 controller may use in-place search. This Extra Credit option must add exploration and a memory of where the robot has already looked.
+
+#### Memory module, minimum contract
+
+The memory does not need a vector database or an extra cloud model. It does need an explicit, inspectable state that prevents the robot from searching the same view indefinitely:
+
+| Memory field | Purpose |
+| --- | --- |
+| Target label from the TA | Identify the requested object |
+| Explored viewpoints | Record yaw bins and, if the robot translates, grid cells already observed |
+| Occupancy or unknown space | Prefer viewpoints that can reveal unseen regions |
+| Last confirmed detection | Optional; store pose, stamp, and request ID only after validation |
+| Exclusion list | Avoid repeating a viewpoint until others are exhausted or a timeout expires |
+
+Use this memory in the controller:
+
+```mermaid
+flowchart TB
+    TA["TA selects target label"] --> SEARCH["In-place search"]
+    SEARCH --> FOUND["Target confirmed"]
+    SEARCH --> MEM["No detection after a full sweep"]
+    MEM --> NEXT["Choose an unexplored safe viewpoint"]
+    NEXT --> MOVE["Bounded translate or turn to that view"]
+    MOVE --> LOOK["Stop, capture, infer"]
+    LOOK --> FOUND
+    LOOK --> MEM
+    FOUND --> ALIGN["Align, approach, and stop"]
+```
+
+#### Demonstration protocol
+
+1. Announce the candidate object set before the session. The TA chooses one object only at demonstration time.
+2. Set the robot so that a 360° in-place search cannot see the object.
+3. Run the required rotate-in-place baseline first. Record that it times out or fails. This is the control experiment.
+4. Enable exploration memory and repeat from the same start pose.
+5. After each viewpoint, stop before using a new VLM result.
+6. Complete at least three trials, including one trial where the object is absent. The absent trial must terminate by timeout, not by approaching a distractor.
+
+#### Success criteria
+
+A trial counts as successful only if all of the following hold:
+
+- the rotate-in-place baseline cannot complete the same scene;
+- the robot visits at least one new viewpoint stored in memory;
+- it approaches the TA-selected object rather than a distractor;
+- it stops with independently measured front clearance greater than 0.40 m;
+- stale LiDAR, stale VLM data, or invalid depth still produce a stop.
+
+Show the TA the memory contents, for example explored yaw bins or grid cells, not only the final approach video.
+
+### Extra Credit evidence
+
+For either option, save:
+
+- the option name and partner group or TA-selected label;
+- start poses, scene layout, and configuration;
+- the control experiment or leader-loss trial;
+- success and failure counts;
+- independently measured final clearance or following gap;
+- video that shows the behavior that the required task cannot produce.
 
 ## Scope and attribution
 
